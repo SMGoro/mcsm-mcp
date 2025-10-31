@@ -1,8 +1,9 @@
 node_modules/
-packages/
+example/
 dist/
 docs/
 test/
+.iflow/
 *.log
 .DS_Store
 *.env

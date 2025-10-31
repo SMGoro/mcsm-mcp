@@ -1,6 +1,6 @@
 /**
- * MCSManager MCP Server - HTTP/SSE Transport
- * Provides Model Context Protocol access via HTTP Server-Sent Events
+ * MCSManager MCP Server - SSE Transport
+ * Provides Model Context Protocol access via Server-Sent Events
  */
 
 import express from "express";
@@ -59,8 +59,6 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "mcsmanager-mcp-server" });
 });
 
-
-
 // MCP endpoint - 兼容 Inspector GET (SSE) 与 POST (HTTP JSON-RPC)
 // 支持 /mcp/:apiKey 路径参数传递
 app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
@@ -70,6 +68,7 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
   console.log(`[MCP] Request Headers:`, req.headers);
   console.log(`[MCP] Request Query:`, req.query);
   console.log(`[MCP] Request Params:`, req.params);
+  console.log(`[MCP] Request URL:`, req.url);
   if (req.method === "POST") {
     console.log(`[MCP] Request Body:`, JSON.stringify(req.body, null, 2));
   }
@@ -77,6 +76,8 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
   // 路径参数 -> query -> header -> ENV，依次取 apiKey、apiUrl
   const params = req.params || {};
   const query = req.query || {};
+  console.log(`[MCP] Raw params:`, params);
+  console.log(`[MCP] Raw query:`, query);
   const apiKeyFromParams = params['apiKey'] || params['apikey'] || params['APIKEY'] || params[0];
   const apiKeyFromQuery = query['mcsm-api-key'] || query['mcsm_api_key'] || query['MCSM_API_KEY'];
   const apiUrlFromParams = params['apiUrl'] || params['api_url'] || params['APIURL'];
@@ -112,13 +113,13 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
   console.log(`[MCP] Extracted API Key: ${apiKeyValue ? `${apiKeyValue.substring(0, 8)}***` : 'none'}`);
   console.log(`[MCP] Extracted API URL: ${apiUrl}`);
 
-  
-  console.log(`[MCP] Extracted API Key: ${apiKeyValue ? `${apiKeyValue.substring(0, 8)}***` : 'none'}`);
-  console.log(`[MCP] Extracted API URL: ${apiUrl}`);
-  // 初始化 MCSManager client
-  const mcsmClient = new MCSManagerClient({ apiUrl, apiKey: apiKeyValue });
+  // Initialize MCSManager client for this connection
+  const mcsmClient = new MCSManagerClient({ 
+    apiUrl, 
+    apiKey: apiKeyValue 
+  });
 
-  // 标准 MCP server 实现
+  // Create MCP server instance
   const server = new Server(
     {
       name: "@mcsmanager/mcp-server",
@@ -130,18 +131,30 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
       },
     }
   );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => handleToolCall(request, mcsmClient));
+
+  // Set up tool handlers
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    console.log(`[MCP] Tools list requested from ${reqIp}`);
+    return {
+      tools: TOOL_DEFINITIONS,
+    };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    console.log(`[MCP] Tool call requested from ${reqIp}: ${request.params.name}`);
+    return handleToolCall(request, mcsmClient);
+  });
 
   if (req.method === "GET") {
-    // 不能手动写响应头或流，让SSEServerTransport全权处理！
+    // SSE endpoint for streaming responses
     console.log(`[MCP] Establishing SSE connection from ${reqIp}`);
     const transport = new SSEServerTransport("/mcp", res);
+    
     try {
       await server.connect(transport);
       console.log(`[MCP] SSE connection established successfully from ${reqIp}`);
-    } catch (e) {
-      console.error('[MCP] SSE server.connect error:', e);
+    } catch (error) {
+      console.error(`[MCP] Failed to connect server to SSE transport:`, error);
       if (!res.headersSent) {
         res.status(500).json({ 
           jsonrpc: "2.0", 
@@ -149,98 +162,95 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
         });
       }
     }
-    req.on('close', () => { 
-      console.log(`[MCP] SSE connection closed from ${reqIp}`); 
-      try { res.end(); } catch(e) {} 
+    
+    // Clean up when connection closes
+    req.on("close", () => {
+      console.log(`[MCP] SSE connection closed for ${reqIp}`);
     });
-    req.on('error', (err) => { 
-      console.error('[MCP] SSE connection error:', err.message || err); 
-      try { res.end(); } catch(e) {} 
+    
+    req.on("error", (err) => {
+      console.error(`[MCP] SSE connection error for ${reqIp}:`, err);
     });
+    
     return;
   }
+  
   if (req.method === "POST") {
+    // POST endpoint for receiving MCP requests
     const msg = req.body;
-    const handle = async (message) => {
-      const requestId = message.id || 'unknown';
-      console.log(`[MCP][${requestId}] Processing ${message.method} request from ${reqIp}`);
-      
-      try {
-        if (!message.method) {
-          throw new Error('Missing method in request');
-        }
+    const requestId = msg.id || 'unknown';
+    console.log(`[MCP][${requestId}] Processing ${msg.method} request from ${reqIp}`);
+    
+    try {
+      if (!msg.method) {
+        throw new Error('Missing method in request');
+      }
 
-        if (message.method === "initialize") {
-          // 使用客户端请求的协议版本，保持兼容性
-          const clientProtocolVersion = message.params?.protocolVersion || "2024-11-05";
-          const resp = {
-            jsonrpc: "2.0",
-            id: message.id,
-            result: {
-              protocolVersion: clientProtocolVersion,
-              capabilities: {
-                tools: { listChanged: true }
-              },
-              serverInfo: {
-                name: "@mcsmanager/mcp-server",
-                version: "1.0.0"
-              }
-            }
-          };
-          console.log(`[MCP][${requestId}] Responding to initialize with protocol ${clientProtocolVersion}: Success`);
-          res.json(resp);
-          return;
-        }
-        
-        if (message.method === "tools/list") {
-          const resp = {
-            jsonrpc: "2.0",
-            id: message.id,
-            result: {
-              tools: TOOL_DEFINITIONS
-            }
-          };
-          console.log(`[MCP][${requestId}] Responding to tools/list: ${TOOL_DEFINITIONS.length} tools`);
-          res.json(resp);
-          return;
-        }
-        
-        if (message.method === "tools/call") {
-          console.log(`[MCP][${requestId}] Tool call: ${message.params?.name || 'unknown'}`);
-          const callResult = await handleToolCall(message, mcsmClient);
-          const resp = { jsonrpc: "2.0", id: message.id, result: callResult };
-          console.log(`[MCP][${requestId}] Tool call completed successfully`);
-          res.json(resp);
-          return;
-        }
-        
-        // 兼容 output/initialized 和其它未知方法
-        console.log(`[MCP][${requestId}] Unknown method: ${message.method}, returning empty result`);
-        const resp = { jsonrpc: "2.0", id: message.id, result: {} };
-        res.json(resp);
-      } catch(err) {
-        console.error(`[MCP][${requestId}] Error handling ${message.method}:`, {
-          message: err.message,
-          stack: err.stack,
-          request: message
-        });
-        
-        const errorResp = {
+      if (msg.method === "initialize") {
+        // Use client's requested protocol version
+        const clientProtocolVersion = msg.params?.protocolVersion || "2024-11-05";
+        const resp = {
           jsonrpc: "2.0",
-          id: message.id,
-          error: {
-            code: -32603, // Internal error
-            message: err.message || 'Internal server error',
-            data: process.env.NODE_ENV === 'development' ? err.stack : undefined
+          id: msg.id,
+          result: {
+            protocolVersion: clientProtocolVersion,
+            capabilities: {
+              tools: { listChanged: true }
+            },
+            serverInfo: {
+              name: "@mcsmanager/mcp-server",
+              version: "1.0.0"
+            }
           }
         };
-        res.status(500).json(errorResp);
+        console.log(`[MCP][${requestId}] Responding to initialize with protocol ${clientProtocolVersion}: Success`);
+        res.json(resp);
+        return;
       }
-    };
-    handle(msg);
+      
+      if (msg.method === "tools/list") {
+        const resp = {
+          jsonrpc: "2.0",
+          id: msg.id,
+          result: {
+            tools: TOOL_DEFINITIONS
+          }
+        };
+        console.log(`[MCP][${requestId}] Responding to tools/list: ${TOOL_DEFINITIONS.length} tools`);
+        res.json(resp);
+        return;
+      }
+      
+      if (msg.method === "tools/call") {
+        console.log(`[MCP][${requestId}] Tool call: ${msg.params?.name || 'unknown'}`);
+        const callResult = await handleToolCall(msg, mcsmClient);
+        const resp = { jsonrpc: "2.0", id: msg.id, result: callResult };
+        console.log(`[MCP][${requestId}] Tool call completed successfully`);
+        res.json(resp);
+        return;
+      }
+      
+      // For other methods, return empty result
+      console.log(`[MCP][${requestId}] Unknown method: ${msg.method}, returning empty result`);
+      const resp = { jsonrpc: "2.0", id: msg.id, result: {} };
+      res.json(resp);
+    } catch (error) {
+      console.error(`[MCP][${requestId}] Error processing request from ${reqIp}:`, error);
+      res.status(500).json({
+        jsonrpc: "2.0",
+        id: msg.id || null,
+        error: {
+          code: -32603,
+          message: error.message || "Internal server error"
+        }
+      });
+    }
+    
     return;
   }
-  res.status(405).json({ 
+  
+  // For other methods, return an error
+  res.status(405).json({
     jsonrpc: "2.0",
     error: {
       code: -32601,
@@ -252,8 +262,8 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
 
 // Start server - listen on all interfaces (0.0.0.0) to support external connections
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`MCSManager MCP Server (HTTP/SSE) listening on port ${PORT}`);
-  console.log(`Local endpoint: http://localhost:${PORT}/mcp`);
-  console.log(`Network endpoint: http://0.0.0.0:${PORT}/mcp`);
+  console.log(`MCSManager MCP Server (SSE) listening on port ${PORT}`);
+  console.log(`SSE endpoint: http://localhost:${PORT}/mcp (GET)`);
+  console.log(`Request endpoint: http://localhost:${PORT}/mcp (POST)`);
   console.log(`Health check: http://localhost:${PORT}/health`);
 });

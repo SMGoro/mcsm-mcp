@@ -59,8 +59,6 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "mcsmanager-mcp-server" });
 });
 
-
-
 // MCP endpoint - 兼容 Inspector GET (SSE) 与 POST (HTTP JSON-RPC)
 // 支持 /mcp/:apiKey 路径参数传递
 app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
@@ -111,10 +109,6 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
   
   console.log(`[MCP] Extracted API Key: ${apiKeyValue ? `${apiKeyValue.substring(0, 8)}***` : 'none'}`);
   console.log(`[MCP] Extracted API URL: ${apiUrl}`);
-
-  
-  console.log(`[MCP] Extracted API Key: ${apiKeyValue ? `${apiKeyValue.substring(0, 8)}***` : 'none'}`);
-  console.log(`[MCP] Extracted API URL: ${apiUrl}`);
   // 初始化 MCSManager client
   const mcsmClient = new MCSManagerClient({ apiUrl, apiKey: apiKeyValue });
 
@@ -137,6 +131,20 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
     // 不能手动写响应头或流，让SSEServerTransport全权处理！
     console.log(`[MCP] Establishing SSE connection from ${reqIp}`);
     const transport = new SSEServerTransport("/mcp", res);
+    
+    // 添加更多调试信息
+    transport.onmessage = (message, extra) => {
+      console.log(`[MCP][SSE] Received message from client:`, message);
+    };
+    
+    transport.onclose = () => {
+      console.log(`[MCP][SSE] Transport closed for ${reqIp}`);
+    };
+    
+    transport.onerror = (error) => {
+      console.error(`[MCP][SSE] Transport error for ${reqIp}:`, error);
+    };
+    
     try {
       await server.connect(transport);
       console.log(`[MCP] SSE connection established successfully from ${reqIp}`);
@@ -149,16 +157,20 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
         });
       }
     }
+    
     req.on('close', () => { 
       console.log(`[MCP] SSE connection closed from ${reqIp}`); 
       try { res.end(); } catch(e) {} 
     });
+    
     req.on('error', (err) => { 
       console.error('[MCP] SSE connection error:', err.message || err); 
       try { res.end(); } catch(e) {} 
     });
+    
     return;
   }
+  
   if (req.method === "POST") {
     const msg = req.body;
     const handle = async (message) => {
@@ -240,6 +252,7 @@ app.all(["/mcp/:apiKey", "/mcp"], async (req, res) => {
     handle(msg);
     return;
   }
+  
   res.status(405).json({ 
     jsonrpc: "2.0",
     error: {

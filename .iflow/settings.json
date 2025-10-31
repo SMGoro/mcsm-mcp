@@ -1,12 +1,11 @@
 {
   "mcpServers": {
-    "mcsmanager-remote-http": {
-      "url": "http://localhost:3009/mcp",
+    "mcsmanager-remote-sse": {
+      "url": "http://localhost:3009/mcp/d3f467e1aaed4481b6e83043dbc4bbab",
+      "transport": "sse",
       "headers": {
-        "MCSM_API_KEY": "d3f467e1aaed4481b6e83043dbc4bbab",
-        "MCSM_API_URL": "http://192.168.9.121:5173"
-      },
-      "transport": "sse"
+        "mcsm-api-url": "http://192.168.9.121:23333"
+      }
     }
   },
   "outputStyle": "Learning"

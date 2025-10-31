@@ -1,0 +1,213 @@
+/**
+ * MCSManager MCP Server - HTTP/SSE Transport
+ * Provides Model Context Protocol access via HTTP and Server-Sent Events
+ */
+
+import express from "express";
+import cors from "cors";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema
+} from "@modelcontextprotocol/sdk/types.js";
+import { MCPClient as MCSManagerClient } from "./api-client.js";
+import { handleToolCall, TOOL_DEFINITIONS } from "./tools.js";
+
+const PORT = process.env.PORT || 3009;
+
+// Store transports by session ID for handling POST requests
+const transports = new Map();
+
+// Create Express app
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", service: "mcsmanager-mcp-server" });
+});
+
+// MCP endpoint for SSE connection
+app.get("/mcp", async (req, res) => {
+  console.log("New MCP connection");
+
+  // Get API key from header (support both formats)
+  const apiKey = req.headers["mcsm-api-key"] || req.headers["mcsm_api_key"] || req.headers["authorization"];
+  
+  if (!apiKey || typeof apiKey !== "string") {
+    res.status(401).json({ error: "Missing MCSM_API_KEY header" });
+    return;
+  }
+
+  // Get API URL from environment or use default
+  const apiUrl = process.env.MCSM_API_URL || "http://localhost:23333";
+
+  // Initialize MCSManager client for this connection
+  const mcsmClient = new MCSManagerClient({
+    apiUrl,
+    apiKey,
+  });
+
+  // Create MCP server instance
+  const server = new Server(
+    {
+      name: "@mcsmanager/mcp-server",
+      version: "1.0.0",
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
+
+  // Set up tool handlers
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return {
+      tools: TOOL_DEFINITIONS,
+    };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    return handleToolCall(request, mcsmClient);
+  });
+
+  // Create SSE transport with /messages endpoint for POST requests
+  const transport = new SSEServerTransport("/messages", res);
+  
+  // Store transport by session ID for handling POST requests
+  transports.set(transport.sessionId, transport);
+  
+  // Clean up transport when connection closes
+  req.on("close", () => {
+    console.log("MCP connection closed");
+    transports.delete(transport.sessionId);
+  });
+  
+  await server.connect(transport);
+});
+
+// MCP endpoint for handling POST requests from clients
+app.post("/messages", async (req, res) => {
+  // Get session ID from query parameters
+  const sessionId = req.query.sessionId;
+  
+  if (!sessionId || typeof sessionId !== "string") {
+    res.status(400).json({ error: "Missing or invalid sessionId query parameter" });
+    return;
+  }
+  
+  // Get transport for this session
+  const transport = transports.get(sessionId);
+  
+  if (!transport) {
+    res.status(404).json({ error: "No active connection for sessionId" });
+    return;
+  }
+  
+  // Handle the POST message
+  try {
+    await transport.handlePostMessage(req, res, req.body);
+  } catch (error: any) {
+    console.error("Error handling POST message:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Direct MCP endpoint for handling POST requests (for compatibility with some clients)
+app.post("/mcp", async (req, res) => {
+  // Get API key from header (support both formats)
+  const apiKey = req.headers["mcsm-api-key"] || req.headers["mcsm_api_key"] || req.headers["authorization"];
+  
+  if (!apiKey || typeof apiKey !== "string") {
+    res.status(401).json({ error: "Missing MCSM_API_KEY header" });
+    return;
+  }
+
+  // Get API URL from environment or use default
+  const apiUrl = process.env.MCSM_API_URL || "http://localhost:23333";
+
+  // Initialize MCSManager client for this connection
+  const mcsmClient = new MCSManagerClient({
+    apiUrl,
+    apiKey,
+  });
+
+  // Create a temporary transport for this direct request
+  const transport = {
+    sessionId: "direct-" + Date.now(),
+    handlePostMessage: async (req: any, res: any, body: any) => {
+      try {
+        // For direct requests, we need to handle the JSON-RPC request directly
+        const request = body;
+        
+        // Handle tools/list request
+        if (request.method === "tools/list") {
+          res.json({
+            jsonrpc: "2.0",
+            id: request.id,
+            result: {
+              tools: TOOL_DEFINITIONS,
+            },
+          });
+          return;
+        }
+        
+        // Handle tools/call request
+        if (request.method === "tools/call") {
+          try {
+            const result = await handleToolCall(request, mcsmClient);
+            res.json({
+              jsonrpc: "2.0",
+              id: request.id,
+              result: result,
+            });
+          } catch (error) {
+            res.json({
+              jsonrpc: "2.0",
+              id: request.id,
+              error: {
+                code: -32603,
+                message: "Internal error",
+              },
+            });
+          }
+          return;
+        }
+        
+        // Unknown method
+        res.json({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: {
+            code: -32601,
+            message: "Method not found",
+          },
+        });
+      } catch (error: any) {
+        console.error("Error handling direct POST message:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  };
+  
+  // Handle the POST message
+  try {
+    await transport.handlePostMessage(req, res, req.body);
+  } catch (error: any) {
+    console.error("Error handling direct POST message:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`MCSManager MCP Server (HTTP) listening on port ${PORT}`);
+  console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+});
+
+
+

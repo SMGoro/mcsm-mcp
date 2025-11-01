@@ -15,7 +15,7 @@ import {
 import { MCPClient as MCSManagerClient } from "./api-client.js";
 import { handleToolCall, TOOL_DEFINITIONS } from "./tools.js";
 
-const PORT = process.env.PORT || 3009;
+const PORT = parseInt(process.env.PORT || '3009', 10);
 
 // Create Express app
 const app = express();

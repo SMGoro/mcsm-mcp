@@ -15,7 +15,7 @@
     "test": "node test/run-all-tests.sh",
     "test:http": "node test/http-test.js",
     "test:stdio": "node test/stdio-test.js",
-    "list-instances": "node list-all-instances.js"
+    "list-instances": "node test/list-all-instances.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

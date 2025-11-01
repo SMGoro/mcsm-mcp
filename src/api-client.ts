@@ -1,9 +1,9 @@
 /**
  * MCSManager API Client
- * Uses mcsm-sdk for typed access to MCSManager Frontend APIs
+ * Uses local implementation for typed access to MCSManager Frontend APIs
  */
 
-import { MCSManagerSDK } from "../packages/mcsm-sdk/dist/index.js";
+import { UserAPI as MCSManagerClient } from "./api/user-api.js";
 
 export interface MCSMConfig {
   apiUrl: string;
@@ -164,14 +164,14 @@ export interface OverviewData {
 }
 
 /**
- * MCSManager Client using mcsm-sdk
+ * MCSManager Client using local implementation
  * Provides a simplified interface for MCP tools
  */
 export class MCPClient {
-  private sdk: MCSManagerSDK;
+  private sdk: MCSManagerClient;
 
   constructor(config: MCSMConfig) {
-    this.sdk = new MCSManagerSDK({
+    this.sdk = new MCSManagerClient({
       apiUrl: config.apiUrl,
       apiKey: config.apiKey,
     });
